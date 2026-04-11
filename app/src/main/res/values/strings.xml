@@ -1,0 +1,25 @@
+<resources>
+    <string name="app_name">地震預警系統</string>
+    <string name="title_monitor">地震速報監測</string>
+    <string name="status_connected">已連線</string>
+    <string name="status_disconnected">未連線 (嘗試重連中…)</string>
+    <string name="city_loading">載入中…</string>
+    <string name="no_earthquake_info">目前無發布地震資訊</string>
+    <string name="earthquake_warning">發布地震預警</string>
+    <string name="arrival_label">抵達</string>
+    <string name="seconds_unit">秒</string>
+    <string name="intensity_label_title">預估級數</string>
+    <string name="level_unit">級</string>
+    <string name="arrival_time_label">預計抵達時間</string>
+
+    <string name="safety_check_title">地震結束，請回報您的狀態</string>
+    <string name="btn_safe">安全</string>
+    <string name="btn_need_help">需要協助</string>
+
+    <string name="nav_home">首頁</string>
+    <string name="nav_map">地圖</string>
+
+    <string name="report_safe">已回報安全</string>
+    <string name="report_need_help">正在發送求救訊號並播放警報…</string>
+    <string name="desc_info_icon">資訊圖示</string>
+</resources>

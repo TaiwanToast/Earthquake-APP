@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+
+    <color name="primary">#2196F3</color>
+    <color name="primary_dark">#1976D2</color>
+    <color name="accent">#FF4081</color>
+
+    <!-- Intensity Colors -->
+    <color name="intensity_low">#4CAF50</color>
+    <color name="intensity_med">#FFEB3B</color>
+    <color name="intensity_high">#FF9800</color>
+    <color name="intensity_extreme">#F44336</color>
+
+    <!-- UI Backgrounds -->
+    <color name="surface">#FFFFFF</color>
+    <color name="background">#FFFFFF</color>
+    <color name="card_bg">#F2F2F2</color>
+    <color name="warning_red">#FF5252</color>
+    <color name="safe_green">#4CAF50</color>
+    <color name="status_connected">#4CAF50</color>
+    <color name="tag_bg">#000000</color>
+    <color name="text_grey">#666666</color>
+</resources>
