@@ -8,6 +8,7 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.pm.ServiceInfo;
 import android.media.MediaPlayer;
 import android.os.Build;
 import android.os.IBinder;
@@ -39,7 +40,18 @@ import okhttp3.WebSocketListener;
 public class EarthquakeService extends Service {
     private static final String TAG = "EarthquakeService";
     private static final String CHANNEL_ID = "EarthquakeChannel";
+    public static final String ACTION_EARTHQUAKE = "EARTHQUAKE_EVENT";
+    public static final String ACTION_CONNECTION = "CONNECTION_STATUS";
+    public static boolean isServiceConnected = false;
+    
+    // 儲存最新的地震資訊與計算結果供全域同步
+    public static EarthquakeData lastEarthquakeData = null;
+    public static int lastIntensity = -1;
+    public static int lastRemainingSeconds = -1;
+    public static long lastUpdateTimeMillis = 0;
+    
     private OkHttpClient client;
+    private Gson gson;
     private WebSocket webSocket;
     private FusedLocationProviderClient fusedLocationClient;
     private MediaPlayer mediaPlayer;
@@ -50,53 +62,127 @@ public class EarthquakeService extends Service {
     public void onCreate() {
         super.onCreate();
         client = new OkHttpClient();
+        gson = new Gson();
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this);
         createNotificationChannel();
-        startForeground(1, getStickyNotification("系統監測中..."));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(1, getStickyNotification("系統監測中..."), ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION);
+        } else {
+            startForeground(1, getStickyNotification("系統監測中..."));
+        }
         connectWebSocket();
     }
 
     private void connectWebSocket() {
-        Request request = new Request.Builder().url("ws://10.0.2.2:8080").build();
+        Request request = new Request.Builder().url("ws://127.0.0.1:8080").build();
         webSocket = client.newWebSocket(request, new WebSocketListener() {
             @Override
+            public void onOpen(WebSocket webSocket, Response response) {
+                Log.d(TAG, "WebSocket Connected");
+                broadcastConnectionStatus(true);
+            }
+
+            @Override
             public void onMessage(WebSocket webSocket, String text) {
-                EarthquakeData data = new Gson().fromJson(text, EarthquakeData.class);
-                if ("earthquake".equals(data.getType())) {
-                    processEarthquake(data);
+                Log.d(TAG, "Received message: " + text);
+                try {
+                    EarthquakeData data = gson.fromJson(text, EarthquakeData.class);
+                    if (data != null && data.getType() != null && data.getType().equalsIgnoreCase("earthquake")) {
+                        processEarthquake(data);
+                    } else {
+                        Log.w(TAG, "Received unknown message type: " + (data != null ? data.getType() : "null"));
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "JSON parsing error: " + e.getMessage());
                 }
             }
 
             @Override
             public void onFailure(WebSocket webSocket, Throwable t, Response response) {
+                Log.e(TAG, "WebSocket Failure: " + t.getMessage());
+                broadcastConnectionStatus(false);
                 new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> connectWebSocket(), 5000);
+            }
+
+            @Override
+            public void onClosing(WebSocket webSocket, int code, String reason) {
+                broadcastConnectionStatus(false);
             }
         });
     }
 
+    private void broadcastConnectionStatus(boolean connected) {
+        isServiceConnected = connected;
+        Intent intent = new Intent(ACTION_CONNECTION);
+        intent.setPackage(getPackageName());
+        intent.putExtra("connected", connected);
+        sendBroadcast(intent);
+    }
+
     private void processEarthquake(EarthquakeData data) {
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
-                ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            return;
+        Log.d(TAG, "Processing earthquake: " + data.getLocation());
+        lastEarthquakeData = data; // 儲存資料
+        
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            Log.e(TAG, "Location permission not granted in Service");
+            // 就算沒權限，也用預設位置跑，確保功能不中斷
         }
 
         fusedLocationClient.getLastLocation().addOnSuccessListener(location -> {
+            Log.d(TAG, "Got last location: " + (location != null ? location.getLatitude() + "," + location.getLongitude() : "null"));
             double uLat = (location != null) ? location.getLatitude() : 25.0330;
             double uLon = (location != null) ? location.getLongitude() : 121.5654;
 
-            // 1. 計算強度並存儲距離
             int intensity = calculateLocalIntensity(data, uLat, uLon);
-            
-            // 2. 計算剩餘秒數 (內含時鐘修正)
             int seconds = calculateArrivalSeconds(data, 3.5);
+            
+            lastEarthquakeData = data;
+            lastIntensity = intensity;
+            lastRemainingSeconds = seconds;
+            lastUpdateTimeMillis = System.currentTimeMillis();
+            
+            Log.d(TAG, "Calculated Intensity: " + intensity + ", Seconds: " + seconds);
 
             showNotification(intensity, seconds);
             playAnnouncement(intensity, seconds);
             
-            Intent intent = new Intent("EARTHQUAKE_EVENT");
+            Intent intent = new Intent(ACTION_EARTHQUAKE);
+            intent.setPackage(getPackageName());
             intent.putExtra("data", new Gson().toJson(data));
+            intent.putExtra("intensity", intensity);
+            intent.putExtra("seconds", seconds);
+            sendBroadcast(intent);
+            Log.d(TAG, "Broadcast sent for earthquake");
+
+            // 啟動全螢幕警告視窗 (Whoscall 模式)
+            launchWarningWindow(data, intensity, seconds);
+        }).addOnFailureListener(e -> {
+            Log.e(TAG, "Failed to get location", e);
+            // 失敗也用預設跑
+            double uLat = 25.0330;
+            double uLon = 121.5654;
+            int intensity = calculateLocalIntensity(data, uLat, uLon);
+            int seconds = calculateArrivalSeconds(data, 3.5);
+            showNotification(intensity, seconds);
+            playAnnouncement(intensity, seconds);
+            Intent intent = new Intent(ACTION_EARTHQUAKE);
+            intent.setPackage(getPackageName());
+            intent.putExtra("data", new Gson().toJson(data));
+            intent.putExtra("intensity", intensity);
+            intent.putExtra("seconds", seconds);
             sendBroadcast(intent);
         });
+    }
+
+    private void launchWarningWindow(EarthquakeData data, int intensity, int seconds) {
+        Intent intent = new Intent(this, fcu.earthquake.WarningActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK 
+                | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT 
+                | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        intent.putExtra("data", new Gson().toJson(data));
+        intent.putExtra("intensity", intensity);
+        intent.putExtra("seconds", seconds);
+        startActivity(intent);
     }
 
     /**
@@ -172,19 +258,30 @@ public class EarthquakeService extends Service {
         double dHypo = Math.sqrt(this.epiDistance * this.epiDistance + data.getDepthKm() * data.getDepthKm());
         double totalTravelTime = dHypo / waveSpeedKmPerSec;
 
-        try {
-            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.TAIWAN);
-            Date originDate = sdf.parse(data.getOriginTime());
-            if (originDate != null) {
-                long t0 = originDate.getTime();
-                long tNow = System.currentTimeMillis();
-                double elapsed = (tNow - t0) / 1000.0;
-                int remainSec = (int) Math.round(totalTravelTime - elapsed);
-                return Math.max(0, Math.min((int) Math.ceil(totalTravelTime), remainSec));
+        String[] formats = {
+                "yyyy-MM-dd'T'HH:mm:ssXXX",
+                "yyyy-MM-dd HH:mm:ss",
+                "yyyy/MM/dd HH:mm:ss"
+        };
+
+        for (String format : formats) {
+            try {
+                SimpleDateFormat sdf = new SimpleDateFormat(format, Locale.TAIWAN);
+                Date originDate = sdf.parse(data.getOriginTime());
+                if (originDate != null) {
+                    long t0 = originDate.getTime();
+                    long tNow = System.currentTimeMillis();
+                    double elapsed = (tNow - t0) / 1000.0;
+                    int remainSec = (int) Math.round(totalTravelTime - elapsed);
+                    Log.d(TAG, "Parsed time with format " + format + ", remainSec: " + remainSec);
+                    return Math.max(0, Math.min((int) Math.ceil(totalTravelTime), remainSec));
+                }
+            } catch (Exception e) {
+                // Try next format
             }
-        } catch (Exception e) {
-            Log.e(TAG, "Time parse error");
         }
+        
+        Log.w(TAG, "All time formats failed for: " + data.getOriginTime());
         return (int) Math.ceil(totalTravelTime);
     }
 
@@ -329,6 +426,7 @@ public class EarthquakeService extends Service {
     @Override
     public void onDestroy() {
         super.onDestroy();
+        isServiceConnected = false;
         if (webSocket != null) webSocket.close(1000, "Service destroyed");
         if (mediaPlayer != null) {
             mediaPlayer.release();

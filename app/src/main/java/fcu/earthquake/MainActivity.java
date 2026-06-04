@@ -9,10 +9,12 @@ import android.content.pm.PackageManager;
 import android.location.Address;
 import android.location.Geocoder;
 import android.location.Location;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Looper;
 import android.preference.PreferenceManager;
+import android.provider.Settings;
 import android.util.Log;
 import android.view.View;
 import android.widget.Toast;
@@ -58,11 +60,25 @@ public class MainActivity extends AppCompatActivity {
     private final BroadcastReceiver earthquakeReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
+            Log.d(TAG, "earthquakeReceiver received broadcast!");
             String json = intent.getStringExtra("data");
             if (json != null) {
                 EarthquakeData data = new Gson().fromJson(json, EarthquakeData.class);
-                handleEarthquakeUpdate(data);
+                int intensity = intent.getIntExtra("intensity", -1);
+                int seconds = intent.getIntExtra("seconds", -1);
+                Log.d(TAG, "Broadcast data: intensity=" + intensity + ", seconds=" + seconds);
+                handleEarthquakeUpdate(data, intensity, seconds);
+            } else {
+                Log.e(TAG, "Received broadcast but data is null");
             }
+        }
+    };
+
+    private final BroadcastReceiver connectionReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            boolean connected = intent.getBooleanExtra("connected", false);
+            viewModel.setConnected(connected);
         }
     };
 
@@ -82,15 +98,59 @@ public class MainActivity extends AppCompatActivity {
         setupObservers();
         setupListeners();
         setupNavigation();
-        checkPermissions();
-        startLocationUpdates();
-        
-        // 啟動背景服務
-        Intent serviceIntent = new Intent(this, EarthquakeService.class);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent);
+        if (hasRequiredPermissions()) {
+            startLocationUpdates();
+            startEarthquakeService();
         } else {
-            startService(serviceIntent);
+            requestRequiredPermissions();
+        }
+
+        checkOverlayPermission();
+    }
+
+    private void checkOverlayPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (!Settings.canDrawOverlays(this)) {
+                Toast.makeText(this, "請開啟懸浮視窗權限以顯示地震警報", Toast.LENGTH_LONG).show();
+                Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:" + getPackageName()));
+                startActivity(intent);
+            }
+        }
+    }
+
+    private boolean hasRequiredPermissions() {
+        boolean fineLoc = ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+        boolean postNotif = true;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            postNotif = ActivityCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
+        }
+        return fineLoc && postNotif;
+    }
+
+    private void requestRequiredPermissions() {
+        String[] permissions;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissions = new String[]{
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.POST_NOTIFICATIONS
+            };
+        } else {
+            permissions = new String[]{
+                    Manifest.permission.ACCESS_FINE_LOCATION
+            };
+        }
+        ActivityCompat.requestPermissions(this, permissions, LOCATION_PERMISSION_REQUEST_CODE);
+    }
+
+    private void startEarthquakeService() {
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            Intent serviceIntent = new Intent(this, EarthquakeService.class);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent);
+            } else {
+                startService(serviceIntent);
+            }
         }
     }
 
@@ -119,7 +179,8 @@ public class MainActivity extends AppCompatActivity {
             binding.cityTag.setText(city);
         });
 
-        viewModel.getEarthquakeData().observe(this, this::handleEarthquakeUpdate);
+        // 移除會導致無限迴圈與數值重置的 getEarthquakeData Observer
+        // 地震資訊更新將統一由 BroadcastReceiver 觸發 handleEarthquakeUpdate
 
         viewModel.getLocalIntensity().observe(this, intensity -> {
             binding.intensityLargeText.setText(String.valueOf(intensity));
@@ -152,21 +213,29 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    private void handleEarthquakeUpdate(EarthquakeData data) {
+    private void handleEarthquakeUpdate(EarthquakeData data, int intensity, int seconds) {
+        Log.d(TAG, "handleEarthquakeUpdate: intensity=" + intensity + ", seconds=" + seconds);
         if (data != null) {
-            binding.updateTimeText.setText("更新於 " + viewModel.getCurrentTaipeiTime());
-            binding.publishTimeText.setText(data.getOriginTime() + " 發表");
-            binding.statusBanner.setText(R.string.earthquake_warning);
-            binding.statusBanner.setBackgroundColor(getColor(R.color.warning_red));
-            
-            updateMapMarker(data.getLatitude(), data.getLongitude(), data.getLocation());
-            
-            double userLat = (lastUserLocation != null) ? lastUserLocation.getLatitude() : 25.0330;
-            double userLon = (lastUserLocation != null) ? lastUserLocation.getLongitude() : 121.5654;
-            
-            viewModel.calculateLocalIntensity(data, userLat, userLon);
-            int remainingSeconds = viewModel.calculateArrivalSeconds(data, userLat, userLon, 3.5);
-            viewModel.startCountdown(remainingSeconds);
+            runOnUiThread(() -> {
+                binding.updateTimeText.setText("更新於 " + viewModel.getCurrentTaipeiTime());
+                binding.publishTimeText.setText(data.getOriginTime() + " 發表");
+                binding.statusBanner.setText(R.string.earthquake_warning);
+                binding.statusBanner.setBackgroundColor(getColor(R.color.warning_red));
+                
+                updateMapMarker(data.getLatitude(), data.getLongitude(), data.getLocation());
+                
+                if (intensity != -1 && seconds != -1) {
+                    viewModel.setLocalIntensity(intensity);
+                    viewModel.startCountdown(seconds);
+                } else {
+                    double userLat = (lastUserLocation != null) ? lastUserLocation.getLatitude() : 25.0330;
+                    double userLon = (lastUserLocation != null) ? lastUserLocation.getLongitude() : 121.5654;
+                    viewModel.calculateLocalIntensity(data, userLat, userLon);
+                    int remainingSeconds = viewModel.calculateArrivalSeconds(data, userLat, userLon, 3.5);
+                    viewModel.startCountdown(remainingSeconds);
+                }
+                viewModel.setEarthquakeData(data);
+            });
         }
     }
 
@@ -274,22 +343,19 @@ public class MainActivity extends AppCompatActivity {
         binding.mapView.invalidate();
     }
 
-    private void checkPermissions() {
-        String[] permissions = {
-                Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.POST_NOTIFICATIONS
-        };
-        ActivityCompat.requestPermissions(this, permissions, LOCATION_PERMISSION_REQUEST_CODE);
-    }
 
     @Override
     protected void onStart() {
         super.onStart();
-        IntentFilter filter = new IntentFilter("EARTHQUAKE_EVENT");
+        IntentFilter earthquakeFilter = new IntentFilter(EarthquakeService.ACTION_EARTHQUAKE);
+        IntentFilter connectionFilter = new IntentFilter(EarthquakeService.ACTION_CONNECTION);
+        
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(earthquakeReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+            registerReceiver(earthquakeReceiver, earthquakeFilter, Context.RECEIVER_NOT_EXPORTED);
+            registerReceiver(connectionReceiver, connectionFilter, Context.RECEIVER_NOT_EXPORTED);
         } else {
-            registerReceiver(earthquakeReceiver, filter);
+            registerReceiver(earthquakeReceiver, earthquakeFilter);
+            registerReceiver(connectionReceiver, connectionFilter);
         }
     }
 
@@ -297,13 +363,26 @@ public class MainActivity extends AppCompatActivity {
     protected void onStop() {
         super.onStop();
         unregisterReceiver(earthquakeReceiver);
+        unregisterReceiver(connectionReceiver);
     }
 
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == LOCATION_PERMISSION_REQUEST_CODE) {
-            startLocationUpdates();
+            boolean allGranted = true;
+            for (int res : grantResults) {
+                if (res != PackageManager.PERMISSION_GRANTED) {
+                    allGranted = false;
+                    break;
+                }
+            }
+            if (allGranted) {
+                startLocationUpdates();
+                startEarthquakeService();
+            } else {
+                Toast.makeText(this, "需要位置與通知權限以運行預警服務", Toast.LENGTH_LONG).show();
+            }
         }
     }
 
@@ -311,6 +390,29 @@ public class MainActivity extends AppCompatActivity {
     public void onResume() {
         super.onResume();
         binding.mapView.onResume();
+        // 主動同步一次連線狀態
+        viewModel.setConnected(EarthquakeService.isServiceConnected);
+
+        // 同步最新的地震資訊，確保從背景回來後資訊持續
+        if (EarthquakeService.lastEarthquakeData != null) {
+            EarthquakeData data = EarthquakeService.lastEarthquakeData;
+            int intensity = EarthquakeService.lastIntensity;
+            
+            // 使用全域統一的基準時間計算剩餘秒數
+            long timePassed = (System.currentTimeMillis() - EarthquakeService.lastUpdateTimeMillis) / 1000;
+            int remainingSeconds = (int) Math.max(0, EarthquakeService.lastRemainingSeconds - timePassed);
+            
+            // 只有在地震尚未結束時才自動觸發更新介面
+            if (remainingSeconds > 0) {
+                handleEarthquakeUpdate(data, intensity, remainingSeconds);
+            } else {
+                // 如果地震已結束，僅顯示資訊但不啟動倒數
+                viewModel.setEarthquakeData(data);
+                viewModel.setLocalIntensity(intensity);
+                binding.statusBanner.setText(R.string.no_earthquake_info);
+                binding.statusBanner.setBackgroundColor(getColor(R.color.safe_green));
+            }
+        }
     }
 
     @Override

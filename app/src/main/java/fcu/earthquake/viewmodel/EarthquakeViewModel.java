@@ -19,11 +19,11 @@ import java.util.TimeZone;
 
 import fcu.earthquake.R;
 import fcu.earthquake.model.EarthquakeData;
-import fcu.earthquake.repository.EarthquakeRepository;
 
 public class EarthquakeViewModel extends AndroidViewModel {
     private static final String TAG = "EarthquakeViewModel";
-    private final EarthquakeRepository repository;
+    private final MutableLiveData<Boolean> isConnected = new MutableLiveData<>(false);
+    private final MutableLiveData<EarthquakeData> earthquakeData = new MutableLiveData<>();
     private final MutableLiveData<Integer> countdown = new MutableLiveData<>(0);
     private final MutableLiveData<Boolean> showSafetyCheck = new MutableLiveData<>(false);
     private final MutableLiveData<List<ReportPoint>> reportPoints = new MutableLiveData<>(new ArrayList<>());
@@ -45,16 +45,22 @@ public class EarthquakeViewModel extends AndroidViewModel {
 
     public EarthquakeViewModel(@NonNull Application application) {
         super(application);
-        repository = new EarthquakeRepository();
-        repository.startWebSocket("ws://192.168.1.106:8080");
     }
 
     public LiveData<EarthquakeData> getEarthquakeData() {
-        return repository.getEarthquakeData();
+        return earthquakeData;
+    }
+
+    public void setEarthquakeData(EarthquakeData data) {
+        earthquakeData.postValue(data);
     }
 
     public LiveData<Boolean> getIsConnected() {
-        return repository.getIsConnected();
+        return isConnected;
+    }
+
+    public void setConnected(boolean connected) {
+        isConnected.postValue(connected);
     }
 
     public LiveData<Integer> getCountdown() {
@@ -75,6 +81,10 @@ public class EarthquakeViewModel extends AndroidViewModel {
     
     public LiveData<Integer> getLocalIntensity() {
         return localIntensity;
+    }
+    
+    public void setLocalIntensity(int intensity) {
+        localIntensity.postValue(intensity);
     }
     
     public void setUserCity(String city) {
@@ -125,7 +135,7 @@ public class EarthquakeViewModel extends AndroidViewModel {
     }
 
     public int calculateArrivalSeconds(EarthquakeData data, double userLat, double userLon, double waveSpeedKmPerSec) {
-         double epiDistance = calculateEpiDistance(
+        double epiDistance = calculateEpiDistance(
                 data.getLatitude(),
                 data.getLongitude(),
                 userLat,
@@ -133,8 +143,31 @@ public class EarthquakeViewModel extends AndroidViewModel {
         );
 
         double dHypo = Math.sqrt(epiDistance * epiDistance + data.getDepthKm() * data.getDepthKm());
+        double totalTravelTime = dHypo / waveSpeedKmPerSec;
 
-        return (int) Math.ceil(dHypo / waveSpeedKmPerSec);
+        String[] formats = {
+                "yyyy-MM-dd'T'HH:mm:ssXXX",
+                "yyyy-MM-dd HH:mm:ss",
+                "yyyy/MM/dd HH:mm:ss"
+        };
+
+        for (String format : formats) {
+            try {
+                SimpleDateFormat sdf = new SimpleDateFormat(format, Locale.TAIWAN);
+                Date originDate = sdf.parse(data.getOriginTime());
+                if (originDate != null) {
+                    long t0 = originDate.getTime();
+                    long tNow = System.currentTimeMillis();
+                    double elapsed = (tNow - t0) / 1000.0;
+                    int remainSec = (int) Math.round(totalTravelTime - elapsed);
+                    return Math.max(0, Math.min((int) Math.ceil(totalTravelTime), remainSec));
+                }
+            } catch (Exception e) {
+                // Try next
+            }
+        }
+
+        return (int) Math.ceil(totalTravelTime);
     }
 
     public void startCountdown(int seconds) {
@@ -205,6 +238,5 @@ public class EarthquakeViewModel extends AndroidViewModel {
         if (mediaPlayer != null) {
             mediaPlayer.release();
         }
-        repository.stopWebSocket();
     }
 }
