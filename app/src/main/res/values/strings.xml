@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">地震預警系統</string>
+    <string name="app_name">震望相助</string>
     <string name="title_monitor">地震速報監測</string>
     <string name="status_connected">已連線</string>
     <string name="status_disconnected">未連線 (嘗試重連中…)</string>
@@ -21,5 +21,7 @@
 
     <string name="report_safe">已回報安全</string>
     <string name="report_need_help">正在發送求救訊號並播放警報…</string>
+    <string name="help_needed_title">我需要協助</string>
+    <string name="btn_help_received">已獲得協助</string>
     <string name="desc_info_icon">資訊圖示</string>
 </resources>

@@ -41,7 +41,7 @@ public class WarningActivity extends AppCompatActivity {
         if (fcu.earthquake.service.EarthquakeService.lastEarthquakeData != null) {
             EarthquakeData data = fcu.earthquake.service.EarthquakeService.lastEarthquakeData;
             int intensity = fcu.earthquake.service.EarthquakeService.lastIntensity;
-            
+
             // 計算從發震至今經過的時間差，同步所有介面
             long timePassed = (System.currentTimeMillis() - fcu.earthquake.service.EarthquakeService.lastUpdateTimeMillis) / 1000;
             seconds = (int) Math.max(0, fcu.earthquake.service.EarthquakeService.lastRemainingSeconds - (int)timePassed);
@@ -51,8 +51,13 @@ public class WarningActivity extends AppCompatActivity {
             binding.countdownText.setText(String.valueOf(seconds));
         }
         
-        binding.btnDismiss.setOnClickListener(v -> finish());
-        
+        binding.btnDismiss.setOnClickListener(v -> {
+            android.content.Intent intent = new android.content.Intent(this, MainActivity.class);
+            intent.addFlags(android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            startActivity(intent);
+            finish();
+        });
+
         startCountdown();
     }
 

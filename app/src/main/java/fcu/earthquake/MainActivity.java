@@ -22,6 +22,7 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 import androidx.lifecycle.ViewModelProvider;
 
 import com.google.android.gms.location.FusedLocationProviderClient;
@@ -79,6 +80,19 @@ public class MainActivity extends AppCompatActivity {
         public void onReceive(Context context, Intent intent) {
             boolean connected = intent.getBooleanExtra("connected", false);
             viewModel.setConnected(connected);
+        }
+    };
+
+    private final BroadcastReceiver mapReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String action = intent.getAction();
+            String json = intent.getStringExtra("data");
+            if (EarthquakeService.ACTION_MAP_UPDATE.equals(action)) {
+                viewModel.updatePointsFromJson(json, false);
+            } else if (EarthquakeService.ACTION_MAP_INIT.equals(action)) {
+                viewModel.updatePointsFromJson(json, true);
+            }
         }
     };
 
@@ -199,6 +213,10 @@ public class MainActivity extends AppCompatActivity {
             binding.safetyCheckScreen.setVisibility(show ? View.VISIBLE : View.GONE);
         });
 
+        viewModel.getShowHelpNeeded().observe(this, show -> {
+            binding.helpNeededScreen.setVisibility(show ? View.VISIBLE : View.GONE);
+        });
+
         viewModel.getReportPoints().observe(this, points -> {
             if (points != null) {
                 for (EarthquakeViewModel.ReportPoint p : points) {
@@ -271,6 +289,10 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void updateCityFromLocation(Location location) {
+        if (!Geocoder.isPresent()) {
+            Log.w(TAG, "Geocoder service is not available");
+            return;
+        }
         new Thread(() -> {
             Geocoder geocoder = new Geocoder(this, Locale.TAIWAN);
             try {
@@ -282,8 +304,8 @@ public class MainActivity extends AppCompatActivity {
                         viewModel.setUserCity(city);
                     }
                 }
-            } catch (IOException e) {
-                Log.e(TAG, "Geocoder error", e);
+            } catch (IOException | RuntimeException e) {
+                Log.e(TAG, "Geocoder error: " + e.getMessage(), e);
             }
         }).start();
     }
@@ -302,6 +324,11 @@ public class MainActivity extends AppCompatActivity {
             double lon = (lastUserLocation != null) ? lastUserLocation.getLongitude() : 121.5654;
             viewModel.onSafetyReported(false, lat, lon);
             Toast.makeText(this, R.string.report_need_help, Toast.LENGTH_LONG).show();
+        });
+
+        binding.btnHelpReceived.setOnClickListener(v -> {
+            viewModel.onHelpReceived();
+            switchToHome();
         });
     }
 
@@ -323,12 +350,15 @@ public class MainActivity extends AppCompatActivity {
         binding.monitorView.setVisibility(View.VISIBLE);
         binding.mapView.setVisibility(View.GONE);
         binding.safetyCheckScreen.setVisibility(View.GONE);
+        binding.helpNeededScreen.setVisibility(View.GONE);
     }
 
     private void switchToMap() {
         binding.monitorView.setVisibility(View.GONE);
         binding.mapView.setVisibility(View.VISIBLE);
         binding.safetyCheckScreen.setVisibility(View.GONE);
+        binding.helpNeededScreen.setVisibility(View.GONE);
+        viewModel.fetchServerMapData(); // 切換分頁時主動同步歷史資料
     }
 
     private void updateMapMarker(double lat, double lon, String location) {
@@ -349,14 +379,15 @@ public class MainActivity extends AppCompatActivity {
         super.onStart();
         IntentFilter earthquakeFilter = new IntentFilter(EarthquakeService.ACTION_EARTHQUAKE);
         IntentFilter connectionFilter = new IntentFilter(EarthquakeService.ACTION_CONNECTION);
-        
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(earthquakeReceiver, earthquakeFilter, Context.RECEIVER_NOT_EXPORTED);
-            registerReceiver(connectionReceiver, connectionFilter, Context.RECEIVER_NOT_EXPORTED);
-        } else {
-            registerReceiver(earthquakeReceiver, earthquakeFilter);
-            registerReceiver(connectionReceiver, connectionFilter);
-        }
+        IntentFilter mapFilter = new IntentFilter();
+        mapFilter.addAction(EarthquakeService.ACTION_MAP_INIT);
+        mapFilter.addAction(EarthquakeService.ACTION_MAP_UPDATE);
+
+        // 使用 ContextCompat 註冊廣播接收器，會自動處理不同 Android 版本的標籤要求
+        // 由於這些廣播僅在 App 內部傳遞，因此使用 RECEIVER_NOT_EXPORTED 以確保安全性
+        ContextCompat.registerReceiver(this, earthquakeReceiver, earthquakeFilter, ContextCompat.RECEIVER_NOT_EXPORTED);
+        ContextCompat.registerReceiver(this, connectionReceiver, connectionFilter, ContextCompat.RECEIVER_NOT_EXPORTED);
+        ContextCompat.registerReceiver(this, mapReceiver, mapFilter, ContextCompat.RECEIVER_NOT_EXPORTED);
     }
 
     @Override
@@ -364,6 +395,7 @@ public class MainActivity extends AppCompatActivity {
         super.onStop();
         unregisterReceiver(earthquakeReceiver);
         unregisterReceiver(connectionReceiver);
+        unregisterReceiver(mapReceiver);
     }
 
     @Override

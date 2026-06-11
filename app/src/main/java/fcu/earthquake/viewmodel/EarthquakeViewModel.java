@@ -26,10 +26,13 @@ public class EarthquakeViewModel extends AndroidViewModel {
     private final MutableLiveData<EarthquakeData> earthquakeData = new MutableLiveData<>();
     private final MutableLiveData<Integer> countdown = new MutableLiveData<>(0);
     private final MutableLiveData<Boolean> showSafetyCheck = new MutableLiveData<>(false);
+    private final MutableLiveData<Boolean> showHelpNeeded = new MutableLiveData<>(false);
     private final MutableLiveData<List<ReportPoint>> reportPoints = new MutableLiveData<>(new ArrayList<>());
     private final MutableLiveData<String> userCity = new MutableLiveData<>("載入中...");
     private final MutableLiveData<Integer> localIntensity = new MutableLiveData<>(0);
     private Thread countdownThread;
+    private Thread maydayThread;
+    private Thread notificationThread;
     private MediaPlayer mediaPlayer;
 
     public static class ReportPoint {
@@ -71,6 +74,10 @@ public class EarthquakeViewModel extends AndroidViewModel {
         return showSafetyCheck;
     }
 
+    public LiveData<Boolean> getShowHelpNeeded() {
+        return showHelpNeeded;
+    }
+
     public LiveData<List<ReportPoint>> getReportPoints() {
         return reportPoints;
     }
@@ -103,7 +110,7 @@ public class EarthquakeViewModel extends AndroidViewModel {
         double dHypoLocal = Math.sqrt(Math.pow(dEpi, 2) + Math.pow(data.getDepthKm(), 2));
         double dHypoEpicenter = data.getDepthKm();
 
-        double localPga = data.getPgaGal() * Math.pow(dHypoEpicenter / dHypoLocal, 2);
+        double localPga = data.getPgaGal() * Math.pow((data.getDepthKm() + 15) / (dHypoLocal + 15), 1.5);
         
         int intensity = 0;
         if (localPga < 0.8) intensity = 0;
@@ -190,6 +197,7 @@ public class EarthquakeViewModel extends AndroidViewModel {
                 playRawResource(R.raw.arrive);
                 Thread.sleep(2000); 
                 showSafetyCheck.postValue(true);
+                startNotificationLoop();
             } catch (InterruptedException e) {
             }
         });
@@ -219,14 +227,110 @@ public class EarthquakeViewModel extends AndroidViewModel {
             mediaPlayer.release();
         }
         mediaPlayer = MediaPlayer.create(getApplication(), resId);
-        mediaPlayer.start();
+        if (mediaPlayer != null) {
+            mediaPlayer.start();
+        }
+    }
+
+    private void startMaydayLoop() {
+        if (maydayThread != null && maydayThread.isAlive()) {
+            maydayThread.interrupt();
+        }
+        maydayThread = new Thread(() -> {
+            try {
+                while (!Thread.currentThread().isInterrupted()) {
+                    playRawResource(R.raw.mayday);
+                    Thread.sleep(10000); // 30 seconds
+                }
+            } catch (InterruptedException e) {
+                // Thread interrupted, stop playing
+            }
+        });
+        maydayThread.start();
+    }
+
+    private void startNotificationLoop() {
+        if (notificationThread != null && notificationThread.isAlive()) {
+            notificationThread.interrupt();
+        }
+        notificationThread = new Thread(() -> {
+            try {
+                while (!Thread.currentThread().isInterrupted()) {
+                    playRawResource(R.raw.notify);
+                    Thread.sleep(5000); // 5 seconds
+                }
+            } catch (InterruptedException e) {
+            }
+        });
+        notificationThread.start();
+    }
+
+    public void onHelpReceived() {
+        showHelpNeeded.setValue(false);
+        if (maydayThread != null) {
+            maydayThread.interrupt();
+            maydayThread = null;
+        }
+        if (mediaPlayer != null) {
+            mediaPlayer.stop();
+            mediaPlayer.release();
+            mediaPlayer = null;
+        }
     }
 
     public void onSafetyReported(boolean safe, double lat, double lon) {
         showSafetyCheck.setValue(false);
-        List<ReportPoint> current = new ArrayList<>(reportPoints.getValue());
-        current.add(new ReportPoint(lat, lon, safe));
-        reportPoints.postValue(current);
+        if (notificationThread != null) {
+            notificationThread.interrupt();
+            notificationThread = null;
+        }
+        if (!safe) {
+            showHelpNeeded.setValue(true);
+            startMaydayLoop();
+        }
+        // 透過 Service 發送給後端
+        if (fcu.earthquake.service.EarthquakeService.getInstance() != null) {
+            fcu.earthquake.service.EarthquakeService.getInstance().sendReport(
+                    safe ? "safe" : "help",
+                    lat,
+                    lon,
+                    ""
+            );
+        }
+    }
+
+    public void fetchServerMapData() {
+        if (fcu.earthquake.service.EarthquakeService.getInstance() != null) {
+            fcu.earthquake.service.EarthquakeService.getInstance().requestMapData();
+        }
+    }
+
+    public void updatePointsFromJson(String json, boolean isArray) {
+        List<ReportPoint> current = new ArrayList<>(reportPoints.getValue() != null ? reportPoints.getValue() : new ArrayList<>());
+        try {
+            if (isArray) {
+                org.json.JSONArray array = new org.json.JSONArray(json);
+                current.clear(); // 請求初始資料時先清空
+                for (int i = 0; i < array.length(); i++) {
+                    org.json.JSONObject obj = array.getJSONObject(i);
+                    current.add(new ReportPoint(
+                            obj.getDouble("latitude"),
+                            obj.getDouble("longitude"),
+                            "safe".equals(obj.getString("status"))
+                    ));
+                }
+            } else {
+                org.json.JSONObject obj = new org.json.JSONObject(json);
+                current.add(new ReportPoint(
+                        obj.getDouble("latitude"),
+                        obj.getDouble("longitude"),
+                        "safe".equals(obj.getString("status"))
+                ));
+            }
+            reportPoints.postValue(current);
+        } catch (Exception e) {
+            Log.e(TAG, "Update points error", e);
+        }
     }
 
     @Override
@@ -234,6 +338,12 @@ public class EarthquakeViewModel extends AndroidViewModel {
         super.onCleared();
         if (countdownThread != null) {
             countdownThread.interrupt();
+        }
+        if (maydayThread != null) {
+            maydayThread.interrupt();
+        }
+        if (notificationThread != null) {
+            notificationThread.interrupt();
         }
         if (mediaPlayer != null) {
             mediaPlayer.release();

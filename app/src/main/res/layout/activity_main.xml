@@ -275,6 +275,41 @@
                 android:textStyle="bold"
                 app:cornerRadius="24dp" />
         </LinearLayout>
+
+        <!-- Screen 3: Help Needed Overlay (New) -->
+        <LinearLayout
+            android:id="@+id/helpNeededScreen"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@color/warning_red"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:padding="32dp"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="48dp"
+                android:gravity="center"
+                android:text="@string/help_needed_title"
+                android:textColor="@color/white"
+                android:textSize="48sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/btnHelpReceived"
+                android:layout_width="match_parent"
+                android:layout_height="120dp"
+                android:backgroundTint="@color/white"
+                android:text="@string/btn_help_received"
+                android:textColor="@color/warning_red"
+                android:textSize="32sp"
+                android:textStyle="bold"
+                app:cornerRadius="24dp" />
+        </LinearLayout>
     </FrameLayout>
 
     <!-- Bottom Navigation Bar -->

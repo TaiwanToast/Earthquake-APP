@@ -12,6 +12,7 @@ import android.content.pm.ServiceInfo;
 import android.media.MediaPlayer;
 import android.os.Build;
 import android.os.IBinder;
+import android.provider.Settings;
 import android.util.Log;
 
 import androidx.annotation.Nullable;
@@ -21,6 +22,8 @@ import androidx.core.app.NotificationCompat;
 import com.google.android.gms.location.FusedLocationProviderClient;
 import com.google.android.gms.location.LocationServices;
 import com.google.gson.Gson;
+
+import org.json.JSONObject;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -42,25 +45,29 @@ public class EarthquakeService extends Service {
     private static final String CHANNEL_ID = "EarthquakeChannel";
     public static final String ACTION_EARTHQUAKE = "EARTHQUAKE_EVENT";
     public static final String ACTION_CONNECTION = "CONNECTION_STATUS";
+    public static final String ACTION_MAP_UPDATE = "MAP_UPDATE";
+    public static final String ACTION_MAP_INIT = "MAP_INIT";
     public static boolean isServiceConnected = false;
-    
-    // 儲存最新的地震資訊與計算結果供全域同步
+
     public static EarthquakeData lastEarthquakeData = null;
     public static int lastIntensity = -1;
     public static int lastRemainingSeconds = -1;
     public static long lastUpdateTimeMillis = 0;
-    
+
+    private static EarthquakeService instance;
+    public static EarthquakeService getInstance() { return instance; }
+
     private OkHttpClient client;
     private Gson gson;
     private WebSocket webSocket;
     private FusedLocationProviderClient fusedLocationClient;
     private MediaPlayer mediaPlayer;
+    private double epiDistance;
 
-    private double epiDistance; // 儲存計算後的震央距離
 
-    @Override
     public void onCreate() {
         super.onCreate();
+        instance = this;
         client = new OkHttpClient();
         gson = new Gson();
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this);
@@ -74,7 +81,8 @@ public class EarthquakeService extends Service {
     }
 
     private void connectWebSocket() {
-        Request request = new Request.Builder().url("ws://127.0.0.1:8080").build();
+        // 使用 10.0.2.2 以便 Android 模擬器連線至開發主機
+        Request request = new Request.Builder().url("ws://192.168.137.1:8080").build();
         webSocket = client.newWebSocket(request, new WebSocketListener() {
             @Override
             public void onOpen(WebSocket webSocket, Response response) {
@@ -86,11 +94,16 @@ public class EarthquakeService extends Service {
             public void onMessage(WebSocket webSocket, String text) {
                 Log.d(TAG, "Received message: " + text);
                 try {
-                    EarthquakeData data = gson.fromJson(text, EarthquakeData.class);
-                    if (data != null && data.getType() != null && data.getType().equalsIgnoreCase("earthquake")) {
+                    JSONObject json = new JSONObject(text);
+                    String type = json.optString("type");
+
+                    if ("earthquake".equals(type)) {
+                        EarthquakeData data = gson.fromJson(text, EarthquakeData.class);
                         processEarthquake(data);
-                    } else {
-                        Log.w(TAG, "Received unknown message type: " + (data != null ? data.getType() : "null"));
+                    } else if ("map_update".equals(type)) {
+                        broadcastMapUpdate(json.getJSONObject("data").toString());
+                    } else if ("map_data_init".equals(type)) {
+                        broadcastMapInit(json.getJSONArray("data").toString());
                     }
                 } catch (Exception e) {
                     Log.e(TAG, "JSON parsing error: " + e.getMessage());
@@ -99,7 +112,6 @@ public class EarthquakeService extends Service {
 
             @Override
             public void onFailure(WebSocket webSocket, Throwable t, Response response) {
-                Log.e(TAG, "WebSocket Failure: " + t.getMessage());
                 broadcastConnectionStatus(false);
                 new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> connectWebSocket(), 5000);
             }
@@ -117,6 +129,49 @@ public class EarthquakeService extends Service {
         intent.setPackage(getPackageName());
         intent.putExtra("connected", connected);
         sendBroadcast(intent);
+    }
+
+    private void broadcastMapUpdate(String dataJson) {
+        Intent intent = new Intent(ACTION_MAP_UPDATE);
+        intent.setPackage(getPackageName());
+        intent.putExtra("data", dataJson);
+        sendBroadcast(intent);
+    }
+
+    private void broadcastMapInit(String arrayJson) {
+        Intent intent = new Intent(ACTION_MAP_INIT);
+        intent.setPackage(getPackageName());
+        intent.putExtra("data", arrayJson);
+        sendBroadcast(intent);
+    }
+
+    public void sendReport(String status, double lat, double lon, String message) {
+        if (webSocket == null || lastEarthquakeData == null) return;
+        try {
+            JSONObject report = new JSONObject();
+            report.put("type", "report_status");
+            report.put("earthquakeId", lastEarthquakeData.getId());
+            report.put("deviceId", Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID));
+            report.put("status", status);
+            report.put("latitude", lat);
+            report.put("longitude", lon);
+            report.put("message", message);
+            webSocket.send(report.toString());
+        } catch (Exception e) {
+            Log.e(TAG, "Send report failed", e);
+        }
+    }
+
+    public void requestMapData() {
+        if (webSocket == null || lastEarthquakeData == null) return;
+        try {
+            JSONObject req = new JSONObject();
+            req.put("type", "get_map_data");
+            req.put("earthquakeId", lastEarthquakeData.getId());
+            webSocket.send(req.toString());
+        } catch (Exception e) {
+            Log.e(TAG, "Request map data failed", e);
+        }
     }
 
     private void processEarthquake(EarthquakeData data) {
@@ -243,7 +298,9 @@ public class EarthquakeService extends Service {
     private int calculateLocalIntensity(EarthquakeData data, double uLat, double uLon) {
         this.epiDistance = calculateEpiDistance(data.getLatitude(), data.getLongitude(), uLat, uLon);
         double dHypoLocal = Math.sqrt(Math.pow(this.epiDistance, 2) + Math.pow(data.getDepthKm(), 2));
-        double localPga = data.getPgaGal() * Math.pow(data.getDepthKm() / dHypoLocal, 2);
+
+        // 修改後的公式
+        double localPga = data.getPgaGal() * Math.pow((data.getDepthKm() + 15) / (dHypoLocal + 15), 1.5);
         
         if (localPga < 0.8) return 0;
         if (localPga < 2.5) return 1;
@@ -420,12 +477,14 @@ public class EarthquakeService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        if (webSocket == null) connectWebSocket();
         return START_STICKY;
     }
 
     @Override
     public void onDestroy() {
         super.onDestroy();
+        instance = null;
         isServiceConnected = false;
         if (webSocket != null) webSocket.close(1000, "Service destroyed");
         if (mediaPlayer != null) {
